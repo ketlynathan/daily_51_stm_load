@@ -1,0 +1,66 @@
+# ==========================
+# AMBIENTE / SEGURANÇA
+# ==========================
+.env
+.env.*
+*.env
+
+# Credenciais sensíveis
+credentials/*.json
+credentials/**/*.json
+
+# ==========================
+# PYTHON
+# ==========================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+
+# Virtual Environment
+.venv/
+venv/
+env/
+
+# ==========================
+# LOGS / OUTPUT
+# ==========================
+logs/
+*.log
+
+# ==========================
+# STREAMLIT
+# ==========================
+.streamlit/
+
+# ==========================
+# BUILD / EXECUTÁVEL
+# ==========================
+build/
+dist/
+*.spec
+
+# ==========================
+# IDE / EDITOR
+# ==========================
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# ==========================
+# SISTEMA OPERACIONAL
+# ==========================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ==========================
+# TEMP / CACHE
+# ==========================
+.cache/
+.pytest_cache/
+.mypy_cache/
