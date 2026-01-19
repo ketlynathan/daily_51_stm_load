@@ -1,28 +1,25 @@
 import os
+import json
 import logging
 import requests
 import pandas as pd
-from io import BytesIO, StringIO
+from io import BytesIO
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import quote
 
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from dotenv import load_dotenv
-import openpyxl  # garante suporte XLSX
+import openpyxl  # noqa
 
 
 # ======================================================
-# LOAD ENV
+# ENV
 # ======================================================
 ROOT_DIR = Path(__file__).resolve().parent
-ENV_PATH = ROOT_DIR / ".env"
-
-if not ENV_PATH.exists():
-    raise FileNotFoundError(f"Arquivo .env não encontrado em: {ENV_PATH}")
-
-load_dotenv(ENV_PATH)
+load_dotenv(ROOT_DIR / ".env")
 
 REQUIRED_VARS = [
     "MANIA_BASE_URL", "MANIA_CARD_ID", "MANIA_SHEET_TAB",
@@ -47,7 +44,7 @@ logger = logging.getLogger("metabase_gsheet")
 
 
 # ======================================================
-# CONFIGS
+# DATACLASSES
 # ======================================================
 @dataclass(frozen=True)
 class MetabaseConfig:
@@ -68,166 +65,163 @@ class GoogleSheetsConfig:
 
 
 # ======================================================
-# ENV HELPERS
+# HELPERS
 # ======================================================
-def get_env(name: str) -> str:
+def env(name: str) -> str:
     value = os.getenv(name)
     if not value:
         raise EnvironmentError(f"Variável obrigatória não definida: {name}")
     return value
 
 
-# ======================================================
-# FACTORIES
-# ======================================================
 def get_metabase_config(empresa: str) -> MetabaseConfig:
     empresa = empresa.upper()
     return MetabaseConfig(
         name=empresa,
-        base_url=get_env(f"{empresa}_BASE_URL"),
-        card_id=get_env(f"{empresa}_CARD_ID"),
-        sheet_tab=get_env(f"{empresa}_SHEET_TAB"),
+        base_url=env(f"{empresa}_BASE_URL"),
+        card_id=env(f"{empresa}_CARD_ID"),
+        sheet_tab=env(f"{empresa}_SHEET_TAB"),
     )
 
 
-def get_google_sheets_config() -> GoogleSheetsConfig:
+def get_gs_config() -> GoogleSheetsConfig:
     return GoogleSheetsConfig(
-        project_id=get_env("GOOGLE_PROJECT_ID"),
-        private_key_id=get_env("GOOGLE_PRIVATE_KEY_ID"),
-        private_key=get_env("GOOGLE_PRIVATE_KEY").replace("\\n", "\n"),
-        client_email=get_env("GOOGLE_CLIENT_EMAIL"),
-        client_id=get_env("GOOGLE_CLIENT_ID"),
-        spreadsheet_id=get_env("GOOGLE_SPREADSHEET_ID"),
+        project_id=env("GOOGLE_PROJECT_ID"),
+        private_key_id=env("GOOGLE_PRIVATE_KEY_ID"),
+        private_key=env("GOOGLE_PRIVATE_KEY").replace("\\n", "\n"),
+        client_email=env("GOOGLE_CLIENT_EMAIL"),
+        client_id=env("GOOGLE_CLIENT_ID"),
+        spreadsheet_id=env("GOOGLE_SPREADSHEET_ID"),
     )
 
 
 # ======================================================
-# CORE FUNCTIONS
+# METABASE
 # ======================================================
-def build_metabase_url(cfg: MetabaseConfig, data_inicio: str, data_fim: str) -> str:
+def build_url(cfg: MetabaseConfig, inicio: str, fim: str) -> str:
+    if cfg.name == "MANIA":
+        return (
+            f"{cfg.base_url}/public/question/{cfg.card_id}.xlsx"
+            f"?data_inicio={inicio}&data_fim={fim}"
+        )
+
+    # AMAZONET
+    parameters = [
+        {
+            "type": "date/single",
+            "value": inicio,
+            "target": ["variable", ["template-tag", "datainicio"]],
+        },
+        {
+            "type": "date/single",
+            "value": fim,
+            "target": ["variable", ["template-tag", "datafim"]],
+        },
+    ]
+
     return (
-        f"{cfg.base_url}/public/question/{cfg.card_id}.xlsx"
-        f"?data_inicio={data_inicio}&data_fim={data_fim}"
+        f"{cfg.base_url}/api/public/card/{cfg.card_id}/query/xlsx"
+        f"?parameters={quote(json.dumps(parameters))}"
     )
 
 
-def extrair_metabase(cfg: MetabaseConfig, data_inicio: str, data_fim: str) -> pd.DataFrame:
-    url = build_metabase_url(cfg, data_inicio, data_fim)
+def extract_metabase(cfg: MetabaseConfig, inicio: str, fim: str) -> pd.DataFrame:
+    url = build_url(cfg, inicio, fim)
     logger.info(f"[{cfg.name}] Endpoint | {url}")
 
-    response = requests.get(url, timeout=60)
-    response.raise_for_status()
+    r = requests.get(url, timeout=60)
+    r.raise_for_status()
 
-    # --------------------------
-    # DEBUG: salvar relatório bruto
-    # --------------------------
-    raw_file_path = ROOT_DIR / f"{cfg.name}_raw.xlsx"
-    with open(raw_file_path, "wb") as f:
-        f.write(response.content)
-    logger.info(f"[{cfg.name}] Relatório bruto salvo em: {raw_file_path}")
+    if r.content[:2] != b"PK":
+        raise ValueError(f"[{cfg.name}] Retorno não é XLSX válido")
 
-    content = response.content
-    is_xlsx = content[:2] == b"PK"  # validação simples XLSX
+    df = pd.read_excel(BytesIO(r.content), engine="openpyxl")
+    logger.info(f"[{cfg.name}] Extração concluída | linhas={len(df)}")
 
-    try:
-        if is_xlsx:
-            df = pd.read_excel(BytesIO(content), engine="openpyxl")
-        else:
-            logger.warning(f"[{cfg.name}] Retorno não é XLSX válido. Fallback para CSV/texto.")
-            df = pd.read_csv(StringIO(response.text))
-    except Exception:
-        logger.exception(f"[{cfg.name}] Falha ao interpretar retorno do Metabase")
-        raise
-
-    logger.info(f"[{cfg.name}] Extração concluída | linhas={len(df)} | colunas={len(df.columns)}")
     return df
 
 
-def conectar_google_sheets(cfg: GoogleSheetsConfig):
+# ======================================================
+# GOOGLE SHEETS
+# ======================================================
+def connect_gs(cfg: GoogleSheetsConfig):
     scope = [
         "https://spreadsheets.google.com/feeds",
         "https://www.googleapis.com/auth/drive",
     ]
 
-    credentials_dict = {
-        "type": "service_account",
-        "project_id": cfg.project_id,
-        "private_key_id": cfg.private_key_id,
-        "private_key": cfg.private_key,
-        "client_email": cfg.client_email,
-        "client_id": cfg.client_id,
-        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-        "token_uri": "https://oauth2.googleapis.com/token",
-        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-        "client_x509_cert_url": f"https://www.googleapis.com/robot/v1/metadata/x509/{cfg.client_email}",
-    }
-
-    credentials = ServiceAccountCredentials.from_json_keyfile_dict(credentials_dict, scope)
+    credentials = ServiceAccountCredentials.from_json_keyfile_dict(
+        {
+            "type": "service_account",
+            "project_id": cfg.project_id,
+            "private_key_id": cfg.private_key_id,
+            "private_key": cfg.private_key,
+            "client_email": cfg.client_email,
+            "client_id": cfg.client_id,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+            "client_x509_cert_url": f"https://www.googleapis.com/robot/v1/metadata/x509/{cfg.client_email}",
+        },
+        scope,
+    )
     return gspread.authorize(credentials)
 
 
-def atualizar_google_sheets(df: pd.DataFrame, aba: str):
+def update_sheet(df: pd.DataFrame, aba: str):
     if df.empty:
-        logger.warning(f"[{aba}] Relatório vazio. Atualização ignorada.")
+        logger.warning(f"[{aba}] DataFrame vazio. Ignorado.")
         return
 
-    gs_cfg = get_google_sheets_config()
-    gc = conectar_google_sheets(gs_cfg)
+    gs_cfg = get_gs_config()
+    gc = connect_gs(gs_cfg)
 
-    sh = gc.open_by_key(gs_cfg.spreadsheet_id)
-    worksheet = sh.worksheet(aba)
+    ws = gc.open_by_key(gs_cfg.spreadsheet_id).worksheet(aba)
+    ws.clear()
+    ws.update([df.columns.tolist()] + df.values.tolist())
 
-    worksheet.clear()
-    worksheet.update([df.columns.tolist()] + df.values.tolist())
-
-    logger.info(f"[{aba}] Google Sheets atualizado com sucesso")
+    logger.info(f"[{aba}] Google Sheets atualizado")
 
 
 # ======================================================
 # MAIN
 # ======================================================
 def main():
-    inicio = datetime.now()
-    logger.info("=" * 38)
-    logger.info("🚀 INÍCIO DA EXECUÇÃO")
-    logger.info(f"Horário início: {inicio}")
-    logger.info("=" * 38)
+    inicio_exec = datetime.now()
+    logger.info("🚀 INÍCIO")
 
     data_fim = (datetime.today() - timedelta(days=1)).strftime("%Y-%m-%d")
     data_inicio = (datetime.today() - timedelta(days=60)).strftime("%Y-%m-%d")
-    logger.info(f"Período global | início={data_inicio} | fim={data_fim}")
-    logger.info("-" * 38)
 
-    for empresa in ["MANIA", "AMAZONET"]:
+    for empresa in ("MANIA", "AMAZONET"):
         try:
             cfg = get_metabase_config(empresa)
-            logger.info(f"🏢 PROCESSANDO EMPRESA: {empresa}")
-
-            df = extrair_metabase(cfg, data_inicio, data_fim)
+            df = extract_metabase(cfg, data_inicio, data_fim)
 
             # ===============================
-            # AJUSTE ESPECÍFICO MANIA
+            # REGRAS POR EMPRESA
             # ===============================
-            if cfg.name == "MANIA" and not df.empty:
-                # Coluna A (index 0)
+            if cfg.name == "MANIA":
+                # Coluna A → string simples
                 df.iloc[:, 0] = df.iloc[:, 0].astype(str)
-                # Coluna D (index 3)
-                df.iloc[:, 3] = df.iloc[:, 3].apply(lambda x: str(x).zfill(18))
-                logger.info("[MANIA] Colunas A e D convertidas para string e protegidas contra truncamento")
 
-            atualizar_google_sheets(df, cfg.sheet_tab)
+                # Coluna D → string com padding (18 dígitos)
+                df.iloc[:, 3] = df.iloc[:, 3].apply(
+                    lambda x: str(x).zfill(18) if pd.notna(x) else x
+                )
+
+            elif cfg.name == "AMAZONET":
+                # Coluna A → MESMA REGRA da coluna D da MANIA
+                df.iloc[:, 0] = df.iloc[:, 0].apply(
+                    lambda x: str(x).zfill(18) if pd.notna(x) else x
+                )
+
+            update_sheet(df, cfg.sheet_tab)
 
         except Exception:
-            logger.exception(f"❌ [{empresa}] Erro durante processamento")
+            logger.exception(f"❌ Erro ao processar {empresa}")
 
-        logger.info("-" * 38)
-
-    fim = datetime.now()
-    logger.info("=" * 38)
-    logger.info("✅ FIM DA EXECUÇÃO")
-    logger.info(f"Horário fim: {fim}")
-    logger.info(f"Duração total: {fim - inicio}")
-    logger.info("=" * 38)
+    logger.info(f"✅ FIM | Duração: {datetime.now() - inicio_exec}")
 
 
 if __name__ == "__main__":
