@@ -8,12 +8,12 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
+import numpy as np
 
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from dotenv import load_dotenv
 import openpyxl  # noqa
-
 
 # ======================================================
 # ENV
@@ -22,16 +22,15 @@ ROOT_DIR = Path(__file__).resolve().parent
 load_dotenv(ROOT_DIR / ".env")
 
 REQUIRED_VARS = [
-    "MANIA_BASE_URL", "MANIA_CARD_ID", "MANIA_SHEET_TAB",
-    "AMAZONET_BASE_URL", "AMAZONET_CARD_ID", "AMAZONET_SHEET_TAB",
     "GOOGLE_PROJECT_ID", "GOOGLE_PRIVATE_KEY_ID", "GOOGLE_PRIVATE_KEY",
-    "GOOGLE_CLIENT_EMAIL", "GOOGLE_CLIENT_ID", "GOOGLE_SPREADSHEET_ID",
+    "GOOGLE_CLIENT_EMAIL", "GOOGLE_CLIENT_ID", "GOOGLE_SPREADSHEET_ID_60",
+    "AMAZONET_BASE_URL", "AMAZONET_CARD_ID_FILA", "AMAZONET_SHEET_TAB_FILA",
+    "MANIA_BASE_URL", "MANIA_CARD_ID_FILA", "MANIA_SHEET_TAB_FILA"
 ]
 
 for var in REQUIRED_VARS:
     if not os.getenv(var):
         raise RuntimeError(f"Variável obrigatória não carregada: {var}")
-
 
 # ======================================================
 # LOGGING
@@ -41,7 +40,6 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | metabase_gsheet | %(message)s",
 )
 logger = logging.getLogger("metabase_gsheet")
-
 
 # ======================================================
 # DATACLASSES
@@ -53,7 +51,6 @@ class MetabaseConfig:
     card_id: str
     sheet_tab: str
 
-
 @dataclass(frozen=True)
 class GoogleSheetsConfig:
     project_id: str
@@ -63,6 +60,29 @@ class GoogleSheetsConfig:
     client_id: str
     spreadsheet_id: str
 
+# ======================================================
+# CONSTANTES DE FILTRO
+# ======================================================
+AMAZONET_TIPO_OS = [
+    "INSTALAÇÃO GRÁTIS",
+    "INSTALAÇÃO (R$ 49,90)",
+    "INSTALAÇÃO (R$ 100,00)",
+    "INSTALAÇÃO (R$ 150,00)",
+    "INSTALAÇÃO (R$ 50,00)",
+    "INSTALAÇÃO WI-FI + (R$ 49,90)",
+    "MUDANÇA DE ENDEREÇO",
+    "MUDANÇA DE ENDEREÇO - R$ 50,00",
+    "MUDANÇA DE ENDEREÇO - R$ 100,00",
+]
+
+MANIA_TIPO_OS = [
+    "INSTALAÇÃO (R$ 20,00)",
+    "INSTALAÇÃO (R$ 100,00)",
+    "INSTALAÇÃO GRÁTIS",
+    "INSTALAÇÃO WI-FI+ (R$ 20,00)",
+    "MUDANÇA DE ENDEREÇO - R$ 50,00",
+    "MUDANÇA DE ENDEREÇO",
+]
 
 # ======================================================
 # HELPERS
@@ -73,16 +93,14 @@ def env(name: str) -> str:
         raise EnvironmentError(f"Variável obrigatória não definida: {name}")
     return value
 
-
 def get_metabase_config(empresa: str) -> MetabaseConfig:
     empresa = empresa.upper()
     return MetabaseConfig(
         name=empresa,
         base_url=env(f"{empresa}_BASE_URL"),
-        card_id=env(f"{empresa}_CARD_ID"),
-        sheet_tab=env(f"{empresa}_SHEET_TAB"),
+        card_id=env(f"{empresa}_CARD_ID_FILA"),
+        sheet_tab=env(f"{empresa}_SHEET_TAB_FILA"),
     )
-
 
 def get_gs_config() -> GoogleSheetsConfig:
     return GoogleSheetsConfig(
@@ -91,39 +109,18 @@ def get_gs_config() -> GoogleSheetsConfig:
         private_key=env("GOOGLE_PRIVATE_KEY").replace("\\n", "\n"),
         client_email=env("GOOGLE_CLIENT_EMAIL"),
         client_id=env("GOOGLE_CLIENT_ID"),
-        spreadsheet_id=env("GOOGLE_SPREADSHEET_ID"),
+        spreadsheet_id=env("GOOGLE_SPREADSHEET_ID_60"),
     )
-
 
 # ======================================================
 # METABASE
 # ======================================================
 def build_url(cfg: MetabaseConfig, inicio: str, fim: str) -> str:
-    if cfg.name == "MANIA":
-        return (
-            f"{cfg.base_url}/public/question/{cfg.card_id}.xlsx"
-            f"?data_inicio={inicio}&data_fim={fim}"
-        )
-
-    # AMAZONET
     parameters = [
-        {
-            "type": "date/single",
-            "value": inicio,
-            "target": ["variable", ["template-tag", "datainicio"]],
-        },
-        {
-            "type": "date/single",
-            "value": fim,
-            "target": ["variable", ["template-tag", "datafim"]],
-        },
+        {"type": "date/single", "value": inicio, "target": ["variable", ["template-tag", "datainicio"]]},
+        {"type": "date/single", "value": fim, "target": ["variable", ["template-tag", "datafim"]]},
     ]
-
-    return (
-        f"{cfg.base_url}/api/public/card/{cfg.card_id}/query/xlsx"
-        f"?parameters={quote(json.dumps(parameters))}"
-    )
-
+    return f"{cfg.base_url}/api/public/card/{cfg.card_id}/query/xlsx?parameters={quote(json.dumps(parameters))}"
 
 def extract_metabase(cfg: MetabaseConfig, inicio: str, fim: str) -> pd.DataFrame:
     url = build_url(cfg, inicio, fim)
@@ -137,18 +134,13 @@ def extract_metabase(cfg: MetabaseConfig, inicio: str, fim: str) -> pd.DataFrame
 
     df = pd.read_excel(BytesIO(r.content), engine="openpyxl")
     logger.info(f"[{cfg.name}] Extração concluída | linhas={len(df)}")
-
     return df
-
 
 # ======================================================
 # GOOGLE SHEETS
 # ======================================================
 def connect_gs(cfg: GoogleSheetsConfig):
-    scope = [
-        "https://spreadsheets.google.com/feeds",
-        "https://www.googleapis.com/auth/drive",
-    ]
+    scope = ["https://spreadsheets.google.com/feeds","https://www.googleapis.com/auth/drive"]
 
     credentials = ServiceAccountCredentials.from_json_keyfile_dict(
         {
@@ -167,7 +159,6 @@ def connect_gs(cfg: GoogleSheetsConfig):
     )
     return gspread.authorize(credentials)
 
-
 def update_sheet(df: pd.DataFrame, aba: str):
     if df.empty:
         logger.warning(f"[{aba}] DataFrame vazio. Ignorado.")
@@ -175,13 +166,15 @@ def update_sheet(df: pd.DataFrame, aba: str):
 
     gs_cfg = get_gs_config()
     gc = connect_gs(gs_cfg)
-
     ws = gc.open_by_key(gs_cfg.spreadsheet_id).worksheet(aba)
-    ws.clear()
-    ws.update([df.columns.tolist()] + df.values.tolist())
 
-    logger.info(f"[{aba}] Google Sheets atualizado")
+    # Prepara os dados: adiciona coluna em branco à esquerda (começa na coluna B)
+    values = [[""] + list(df.columns)]
+    for row in df.values.tolist():
+        values.append([""] + row)
 
+    ws.update("A1", values, value_input_option="RAW")
+    logger.info(f"[{aba}] Google Sheets atualizado a partir da coluna B")
 
 # ======================================================
 # MAIN
@@ -191,7 +184,7 @@ def main():
     logger.info("🚀 INÍCIO")
 
     data_fim = (datetime.today() - timedelta(days=1)).strftime("%Y-%m-%d")
-    data_inicio = (datetime.today() - timedelta(days=60)).strftime("%Y-%m-%d")
+    data_inicio = (datetime.today() - timedelta(days=40)).strftime("%Y-%m-%d")
 
     for empresa in ("MANIA", "AMAZONET"):
         try:
@@ -199,30 +192,31 @@ def main():
             df = extract_metabase(cfg, data_inicio, data_fim)
 
             # ===============================
-            # REGRAS POR EMPRESA
+            # FILTRO DE TIPOS DE OS
             # ===============================
-            if cfg.name == "MANIA":
-                # Coluna A → string simples
-                df.iloc[:, 0] = df.iloc[:, 0].astype(str)
+            if cfg.name == "AMAZONET":
+                df = df[df.iloc[:, 19].isin(AMAZONET_TIPO_OS)]  # coluna T = índice 19
+                df.iloc[:, 27] = df.iloc[:, 27].apply(lambda x: str(int(x)).zfill(18) if pd.notna(x) else "")
 
-                # Coluna D → string com padding (18 dígitos)
-                df.iloc[:, 3] = df.iloc[:, 3].apply(
-                    lambda x: str(x).zfill(18) if pd.notna(x) else x
-                )
+            elif cfg.name == "MANIA":
+                df = df[df.iloc[:, 19].isin(MANIA_TIPO_OS)]  # coluna T = índice 19
+                df.iloc[:, 0] = df.iloc[:, 0].apply(lambda x: str(x) if pd.notna(x) else "")
+                df.iloc[:, 15] = df.iloc[:, 15].apply(lambda x: str(int(x)).zfill(18) if pd.notna(x) else "")
 
-            elif cfg.name == "AMAZONET":
-                # Coluna A → MESMA REGRA da coluna D da MANIA
-                df.iloc[:, 0] = df.iloc[:, 0].apply(
-                    lambda x: str(x).zfill(18) if pd.notna(x) else x
-                )
+            # ===============================
+            # Limpeza geral
+            # ===============================
+            df = df.replace([np.nan, np.inf, -np.inf], "")
 
+            # ===============================
+            # Atualiza Google Sheet
+            # ===============================
             update_sheet(df, cfg.sheet_tab)
 
         except Exception:
             logger.exception(f"❌ Erro ao processar {empresa}")
 
     logger.info(f"✅ FIM | Duração: {datetime.now() - inicio_exec}")
-
 
 if __name__ == "__main__":
     main()

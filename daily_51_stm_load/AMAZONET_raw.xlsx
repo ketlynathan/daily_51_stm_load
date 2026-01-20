@@ -1,1 +1,0 @@
-{"status":"failed","error":"Não é possível executar a consulta: faltando parâmetros necessários: #{\"datafim\" \"datainicio\"}","error_type":"missing-required-parameter"}
