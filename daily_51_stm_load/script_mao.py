@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
 import numpy as np
+from padroes import padrao_18
+
 
 
 import gspread
@@ -27,7 +29,7 @@ REQUIRED_VARS = [
     "MANIA_BASE_URL", "MANIA_CARD_ID", "MANIA_SHEET_TAB",
     "AMAZONET_BASE_URL", "AMAZONET_CARD_ID", "AMAZONET_SHEET_TAB",
     "GOOGLE_PROJECT_ID", "GOOGLE_PRIVATE_KEY_ID", "GOOGLE_PRIVATE_KEY",
-    "GOOGLE_CLIENT_EMAIL", "GOOGLE_CLIENT_ID", "GOOGLE_SPREADSHEET_ID",
+    "GOOGLE_CLIENT_EMAIL", "GOOGLE_CLIENT_ID", "GOOGLE_SPREADSHEET_ID_90",
 ]
 
 for var in REQUIRED_VARS:
@@ -217,23 +219,15 @@ def main():
             cfg = get_metabase_config(empresa)
             df = extract_metabase(cfg, data_inicio, data_fim)
 
-            # ===============================
-            # REGRAS POR EMPRESA
-            # ===============================
-            if cfg.name == "MANIA":
-                # Coluna A → string simples
-                df.iloc[:, 0] = df.iloc[:, 0].astype(str)
+            # ==========================================
+            # 🔢 PADRONIZAÇÃO DE CÓDIGOS (18 DÍGITOS)
+            # ==========================================
+            df.iloc[:, 0] = df.iloc[:, 0].apply(padrao_18)
 
-                # Coluna D → string com padding (18 dígitos)
-                df.iloc[:, 3] = df.iloc[:, 3].apply(
-                    lambda x: str(x).zfill(18) if pd.notna(x) else x
-                )
+            # Se existir outra coluna de código (como a coluna D da MANIA)
+            if df.shape[1] > 3:
+                df.iloc[:, 3] = df.iloc[:, 3].apply(padrao_18)
 
-            elif cfg.name == "AMAZONET":
-                # Coluna A → MESMA REGRA da coluna D da MANIA
-                df.iloc[:, 0] = df.iloc[:, 0].apply(
-                    lambda x: str(x).zfill(18) if pd.notna(x) else x
-                )
             # 🔥 LIMPEZA OBRIGATÓRIA PARA GOOGLE SHEETS
             df = df.replace([np.nan, np.inf, -np.inf], "")
 

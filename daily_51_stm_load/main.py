@@ -62,14 +62,13 @@ def main():
     # Scripts Python
     script_stm = root_dir / "script_stm.py"
     script_mao = root_dir / "script_mao.py"
-    #script_60  = root_dir / "script_60.py"  # ou pode ser um .exe
+    script_60  = root_dir / "script_60.py"  # ou pode ser um .exe
 
     # Rodando scripts em sequência
     run_script(script_stm)
     run_script(script_mao)
 
-    # Se script_60 for Python
-    #run_script(script_60)
+    run_script(script_60)
 
     # Se script_60 for executável, descomente:
     # run_executable(script_60)

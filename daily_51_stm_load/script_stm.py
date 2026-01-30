@@ -13,6 +13,8 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from dotenv import load_dotenv
 import openpyxl  # noqa
+from padroes import padrao_18
+
 
 
 # ======================================================
@@ -211,33 +213,28 @@ def main():
             cfg = get_metabase_config(empresa)
             df = extract_metabase(cfg, data_inicio, data_fim)
 
-            # ===============================
-            # REGRAS POR EMPRESA
-            # ===============================
-            if cfg.name == "MANIA":
-                # Coluna A → string simples
-                df.iloc[:, 0] = df.iloc[:, 0].astype(str)
+            # ==========================================
+            # 🔢 PADRONIZAÇÃO DE CÓDIGOS (18 DÍGITOS)
+            # ==========================================
+            # Primeira coluna (código principal)
+            df.iloc[:, 0] = df.iloc[:, 0].apply(padrao_18)
 
-                # Coluna D → string com padding (18 dígitos)
-                df.iloc[:, 3] = df.iloc[:, 3].apply(
-                    lambda x: str(x).zfill(18) if pd.notna(x) else x
-                )
+            # Se existir uma segunda coluna de código (ex: coluna D da MANIA)
+            if df.shape[1] > 3:
+                df.iloc[:, 3] = df.iloc[:, 3].apply(padrao_18)
 
-            elif cfg.name == "AMAZONET":
-                # Coluna A → MESMA REGRA da coluna D da MANIA
-                df.iloc[:, 0] = df.iloc[:, 0].apply(
-                    lambda x: str(x).zfill(18) if pd.notna(x) else x
-                )
-            
-            # 🔥 LIMPEZA OBRIGATÓRIA PARA GOOGLE SHEETS
-            
+            # ==========================================
+            # 🧹 LIMPEZA PARA GOOGLE SHEETS
+            # ==========================================
             df = df.astype(str).replace("nan", "")
-
 
             update_sheet(df, cfg.sheet_tab)
 
         except Exception:
             logger.exception(f"❌ Erro ao processar {empresa}")
+
+    logger.info(f"✅ FIM | Duração: {datetime.now() - inicio_exec}")
+
 
     logger.info(f"✅ FIM | Duração: {datetime.now() - inicio_exec}")
 
