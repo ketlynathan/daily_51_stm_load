@@ -168,13 +168,19 @@ def update_sheet(df: pd.DataFrame, aba: str):
     gc = connect_gs(gs_cfg)
     ws = gc.open_by_key(gs_cfg.spreadsheet_id).worksheet(aba)
 
-    # Prepara os dados: adiciona coluna em branco à esquerda (começa na coluna B)
-    values = [[""] + list(df.columns)]
-    for row in df.values.tolist():
-        values.append([""] + row)
+    # NÃO envia o index do pandas
+    df_to_send = df.reset_index(drop=True)
 
-    ws.update("A1", values, value_input_option="RAW")
-    logger.info(f"[{aba}] Google Sheets atualizado a partir da coluna B")
+    values = [df_to_send.columns.tolist()] + df_to_send.astype(str).values.tolist()
+
+    # Limpa só a área onde os dados vivem (da coluna B pra frente)
+    ws.batch_clear(["B2:Z"])
+
+    # 👇 começa da COLUNA B (index 1 do Sheets)
+    ws.update(range_name="B1", values=values, value_input_option="RAW")
+
+    logger.info(f"[{aba}] Dados atualizados a partir da coluna B ✅")
+
 
 # ======================================================
 # MAIN
