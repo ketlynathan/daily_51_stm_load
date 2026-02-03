@@ -93,7 +93,7 @@ def get_gs_config() -> GoogleSheetsConfig:
         private_key=env("GOOGLE_PRIVATE_KEY").replace("\\n", "\n"),
         client_email=env("GOOGLE_CLIENT_EMAIL"),
         client_id=env("GOOGLE_CLIENT_ID"),
-        spreadsheet_id=env("GOOGLE_SPREADSHEET_ID"),
+        spreadsheet_id=env("GOOGLE_SPREADSHEET_ID_STM"),
     )
 
 
